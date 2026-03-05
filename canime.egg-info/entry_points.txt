@@ -1,0 +1,2 @@
+[console_scripts]
+canime = canime:main
