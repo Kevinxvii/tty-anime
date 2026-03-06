@@ -112,40 +112,48 @@ def get_base() -> str:
 # ── Ricerca anime ─────────────────────────────────────────────────────────────
 def search_anime(query: str) -> list[dict]:
     """
-    Metodo 1: aw.find() ufficiale.
-    Metodo 2: API /api/search con scraping HTML della risposta {"html":"..."}.
-    I risultati vengono filtrati per rilevanza (il titolo deve contenere
-    almeno una parola della query).
+    Ricerca su AnimeWorld con query progressivamente più ampia:
+    1. aw.find(query completa)
+    2. API /api/search?keyword=query
+    3. aw.find() per ogni parola principale della query (cattura stagioni/sequel)
+    Ordina per rilevanza: prima i titoli che contengono tutte le parole.
     """
-    results = []
-    seen    = set()
-    words   = [w.lower() for w in query.split() if len(w) > 2]
+    seen    = {}   # link → {"name":..., "link":..., "score":...}
+    words   = [w.lower() for w in query.split() if len(w) > 1]
+    base    = get_base()
+
+    # Parole "core" della query (escludi numeri e parole corte)
+    core_words = [w for w in words if len(w) >= 4]
+
+    def score(title: str) -> int:
+        t = title.lower()
+        return sum(1 for w in words if w in t)
 
     def is_relevant(title: str) -> bool:
         t = title.lower()
-        return any(w in t for w in words)
+        # Il titolo deve contenere TUTTE le parole core della query
+        return all(w in t for w in core_words) if core_words else score(title) > 0
 
     def add(title, link):
-        if link in seen: return
+        if not title or not link: return
+        if "/play/" not in link:
+            link = f"{base}/play/{link}"
         if not is_relevant(title): return
-        seen.add(link)
-        results.append({"name": title, "link": link})
+        s = score(title)
+        if link not in seen or seen[link]["score"] < s:
+            seen[link] = {"name": title, "link": link, "score": s}
 
-    # Metodo 1: libreria ufficiale
+    # 1. aw.find() query completa
     try:
         found = aw.find(query)
-        if found:
-            if isinstance(found, dict): found = [found]
-            for a in found:
-                title = a.get("name") or a.get("title","")
-                link  = a.get("link","")
-                add(title, link)
+        if isinstance(found, dict): found = [found]
+        for a in (found or []):
+            add(a.get("name") or a.get("title",""), a.get("link",""))
     except Exception:
         pass
 
-    # Metodo 2: API /api/search → {"html":"..."}
+    # 2. API /api/search
     try:
-        base = get_base()
         r = requests.get(
             f"{base}/api/search?keyword={quote(query)}",
             timeout=15,
@@ -157,8 +165,6 @@ def search_anime(query: str) -> list[dict]:
             },
         )
         data = r.json()
-
-        # Caso A: array diretto
         items = []
         if isinstance(data, list):
             items = data
@@ -166,33 +172,49 @@ def search_anime(query: str) -> list[dict]:
             items = data.get("animes") or data.get("data") or data.get("results") or []
 
         for item in items:
-            title = item.get("title") or item.get("name","")
-            link  = item.get("link")  or item.get("slug","")
-            if link and "/play/" not in link:
-                link = f"{base}/play/{link}"
-            if title and link: add(title, link)
+            add(item.get("title") or item.get("name",""),
+                item.get("link") or item.get("slug",""))
 
-        # Caso B: {"html":"..."} — scraping
-        if not items and isinstance(data, dict) and "html" in data:
+        # Caso {"html":"..."} — sempre, per catturare tutti i risultati
+        if isinstance(data, dict) and "html" in data:
             soup = BeautifulSoup(data["html"], "html.parser")
-            # AnimeWorld mette href="play/slug" nei tag <a>
-            for a_tag in soup.find_all("a", href=True):
-                href = a_tag["href"]
+            for a_tag in soup.find_all("a", class_="name", href=True):
+                href  = a_tag["href"]
                 if "play/" not in href: continue
-                slug = href.split("play/")[-1].rstrip("/")
-                link = f"{base}/play/{slug}"
-                # Il titolo sta nel tag con class "name" vicino all'<a>
-                parent  = a_tag.find_parent()
-                nm_tag  = (parent.find(class_=re.compile(r"\bname\b", re.I)) if parent else None)
-                title   = nm_tag.get_text(strip=True) if nm_tag else ""
-                if not title:
-                    title = slug.rsplit(".", 1)[0].replace("-", " ").title()
+                slug  = href.split("play/")[-1].rstrip("/")
+                link  = f"{base}/play/{slug}"
+                title = a_tag.get_text(strip=True)
                 add(title, link)
-
     except Exception:
         pass
 
-    return results
+    # 3. aw.find() per ogni parola lunga (cattura stagioni cercando "jujutsu")
+    for word in words:
+        if len(word) < 4: continue
+        try:
+            found = aw.find(word)
+            if isinstance(found, dict): found = [found]
+            for a in (found or []):
+                add(a.get("name") or a.get("title",""), a.get("link",""))
+        except Exception:
+            pass
+
+    # 4. Cerca sequel automaticamente: "query 2", "query 3" ... "query 5"
+    #    Usa anche solo la prima parola core per trovare più risultati
+    search_bases = [query] + core_words[:1]
+    for base_q in search_bases:
+        for n in range(2, 6):
+            try:
+                found = aw.find(f"{base_q} {n}")
+                if isinstance(found, dict): found = [found]
+                for a in (found or []):
+                    add(a.get("name") or a.get("title",""), a.get("link",""))
+            except Exception:
+                pass
+
+    # Ordina: score desc, poi alfabetico
+    results = sorted(seen.values(), key=lambda x: (-x["score"], x["name"]))
+    return [{"name": r["name"], "link": r["link"]} for r in results]
 
 # ── Risoluzione URL SweetPixel ────────────────────────────────────────────────
 def resolve_stream_url(raw_url: str) -> str:
@@ -230,9 +252,9 @@ def pick_episode(episodes: list, anime_name: str = "") -> tuple:
         print(f"  {B}Episodi{R}  {DIM}({lo+1}–{hi} di {total}){R}")
         sep()
 
+        watched = get_watched(anime_name)
         for i, ep in enumerate(chunk):
             gi = lo + i + 1
-            watched = get_watched(anime_name)
             tick = f"  {G}✓{R}" if ep.number in watched else "   "
             print(f"  {DIM}{gi:>4}.{R}{tick}  Ep {B}{ep.number}{R}")
 
@@ -272,6 +294,7 @@ def play_episode(ep, episodes: list, ep_idx: int, anime_name: str) -> int:
     print()
 
     try:
+        mark_watched(anime_name, ep.number)  # segna subito, anche se si chiude a metà
         subprocess.run([
             "mpv", "--no-ytdl",
             "--fs",
@@ -282,7 +305,6 @@ def play_episode(ep, episodes: list, ep_idx: int, anime_name: str) -> int:
             "--really-quiet",
             final_url,
         ])
-        mark_watched(anime_name, ep.number)
     except FileNotFoundError:
         err("MPV non trovato. Installa: https://mpv.io/installation/")
 
