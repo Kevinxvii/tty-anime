@@ -1,9 +1,0 @@
-README.md
-canime.py
-setup.py
-canime.egg-info/PKG-INFO
-canime.egg-info/SOURCES.txt
-canime.egg-info/dependency_links.txt
-canime.egg-info/entry_points.txt
-canime.egg-info/requires.txt
-canime.egg-info/top_level.txt

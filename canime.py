@@ -41,10 +41,40 @@ AW_DOMAINS = [
 BANNER = f"""
 {C}{B}  ▄▀▀ ▄▀▄ █▄  █ █ █▄ ▄█ █▀▀  ▄▀▀ █   █{R}
 {C}{B}  ▀▄▄ █▀█ █ ▀█ █ █ ▀█▀ █▄▄  █   █▄▄ █{R}
-{DIM}  AnimeWorld CLI  —  v2.1{R}
+{DIM}  AnimeWorld CLI  —  v2.2{R}
 """
 
 _base_url = None  # dominio attivo rilevato
+
+# ── Watch history ─────────────────────────────────────────────────────────────
+WATCH_FILE = os.path.expanduser("~/.canime_watched.json")
+
+def _load_watched() -> dict:
+    try:
+        if os.path.exists(WATCH_FILE):
+            return json.load(open(WATCH_FILE))
+    except Exception:
+        pass
+    return {}
+
+def _save_watched(data: dict):
+    try:
+        json.dump(data, open(WATCH_FILE, "w"), indent=2)
+    except Exception:
+        pass
+
+def mark_watched(anime_name: str, ep_number: str):
+    data = _load_watched()
+    key  = anime_name.strip()
+    if key not in data:
+        data[key] = []
+    if ep_number not in data[key]:
+        data[key].append(ep_number)
+    _save_watched(data)
+
+def get_watched(anime_name: str) -> set:
+    data = _load_watched()
+    return set(data.get(anime_name.strip(), []))
 
 def banner():
     os.system("clear")
@@ -185,7 +215,7 @@ def resolve_stream_url(raw_url: str) -> str:
     return raw_url
 
 # ── Picker episodi paginato ───────────────────────────────────────────────────
-def pick_episode(episodes: list) -> tuple:
+def pick_episode(episodes: list, anime_name: str = "") -> tuple:
     total   = len(episodes)
     page_sz = 30
     page    = 0
@@ -202,7 +232,9 @@ def pick_episode(episodes: list) -> tuple:
 
         for i, ep in enumerate(chunk):
             gi = lo + i + 1
-            print(f"  {DIM}{gi:>4}.{R}  Ep {B}{ep.number}{R}")
+            watched = get_watched(anime_name)
+            tick = f"  {G}✓{R}" if ep.number in watched else "   "
+            print(f"  {DIM}{gi:>4}.{R}{tick}  Ep {B}{ep.number}{R}")
 
         nav = []
         if lo > 0:   nav.append(f"{DIM}p{R}=prec.pagina")
@@ -242,12 +274,15 @@ def play_episode(ep, episodes: list, ep_idx: int, anime_name: str) -> int:
     try:
         subprocess.run([
             "mpv", "--no-ytdl",
+            "--fs",
+            "--geometry=100%x100%",
             f"--user-agent={UA}",
             f"--referrer={get_base()}/",
             f"--title=CANIME │ {anime_name} │ Ep {ep.number}",
             "--really-quiet",
             final_url,
         ])
+        mark_watched(anime_name, ep.number)
     except FileNotFoundError:
         err("MPV non trovato. Installa: https://mpv.io/installation/")
 
@@ -362,7 +397,7 @@ def main():
 
         while True:
             if ep_idx is None:
-                ep, ep_idx = pick_episode(episodes)
+                ep, ep_idx = pick_episode(episodes, anime_name)
                 if ep is None:
                     break
 

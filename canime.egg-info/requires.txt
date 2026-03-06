@@ -1,3 +1,0 @@
-animeworld
-requests
-beautifulsoup4
